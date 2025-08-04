@@ -26,6 +26,7 @@ function _stripIndents(value: string) {
     }
 
     const currentIndent = line.match(/^\s*/)?.[0].length ?? 0;
+
     if (currentIndent < indent) {
       indent = currentIndent;
     }
@@ -36,5 +37,8 @@ function _stripIndents(value: string) {
   }
 
   // slice the common indentation from each line and remove trailing newlines
-  return lines.map((line) => line.slice(indent)).join('\n').replace(/[\r\n]+$/, '');
+  return lines
+    .map((line) => line.slice(indent))
+    .join('\n')
+    .replace(/[\r\n]+$/, '');
 }
