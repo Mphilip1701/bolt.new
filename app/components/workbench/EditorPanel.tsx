@@ -68,6 +68,46 @@ export const EditorPanel = memo(
     const [activeTerminal, setActiveTerminal] = useState(0);
     const [terminalCount, setTerminalCount] = useState(1);
 
+    const wsRef = useRef<WebSocket | null>(null);
+    const userIdRef = useRef<string | null>(null);
+
+    useEffect(() => {
+      const stored = sessionStorage.getItem('collabUserId');
+      userIdRef.current = stored ?? crypto.randomUUID();
+
+      if (!stored) {
+        sessionStorage.setItem('collabUserId', userIdRef.current);
+      }
+
+      const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+      const ws = new WebSocket(`${protocol}://${window.location.host}/collab`);
+      wsRef.current = ws;
+
+      ws.addEventListener('open', () => {
+        ws.send(JSON.stringify({ type: 'join', userId: userIdRef.current }));
+      });
+
+      ws.addEventListener('message', (event) => {
+        try {
+          const data = JSON.parse(event.data as string);
+
+          if (
+            data.type === 'edit' &&
+            data.userId !== userIdRef.current &&
+            data.filePath === workbenchStore.currentDocument.get()?.filePath
+          ) {
+            workbenchStore.setCurrentDocumentContent(data.content);
+          }
+        } catch {
+          // ignore
+        }
+      });
+
+      return () => {
+        ws.close();
+      };
+    }, []);
+
     const activeFileSegments = useMemo(() => {
       if (!editorDocument) {
         return undefined;
@@ -172,7 +212,20 @@ export const EditorPanel = memo(
                   doc={editorDocument}
                   autoFocusOnDocumentChange={!isMobile()}
                   onScroll={onEditorScroll}
-                  onChange={onEditorChange}
+                  onChange={(update) => {
+                    onEditorChange?.(update);
+
+                    if (editorDocument?.filePath && wsRef.current?.readyState === WebSocket.OPEN && userIdRef.current) {
+                      wsRef.current.send(
+                        JSON.stringify({
+                          type: 'edit',
+                          userId: userIdRef.current,
+                          filePath: editorDocument.filePath,
+                          content: update.content,
+                        }),
+                      );
+                    }
+                  }}
                   onSave={onFileSave}
                 />
               </div>

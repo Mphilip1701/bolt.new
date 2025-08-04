@@ -75,7 +75,7 @@ export const ChatImpl = memo(({ initialMessages, storeMessageHistory }: ChatProp
 
   const [animationScope, animate] = useAnimate();
 
-  const { messages, isLoading, input, handleInputChange, setInput, stop, append } = useChat({
+  const { messages, isLoading, input, handleInputChange, setInput, stop, append, setMessages } = useChat({
     api: '/api/chat',
     onError: (error) => {
       logger.error('Request failed\n\n', error);
@@ -92,9 +92,71 @@ export const ChatImpl = memo(({ initialMessages, storeMessageHistory }: ChatProp
 
   const TEXTAREA_MAX_HEIGHT = chatStarted ? 400 : 200;
 
+  const wsRef = useRef<WebSocket | null>(null);
+  const userIdRef = useRef<string | null>(null);
+  const [remoteUsers, setRemoteUsers] = useState<string[]>([]);
+  const incomingRef = useRef(false);
+
   useEffect(() => {
     chatStore.setKey('started', initialMessages.length > 0);
   }, []);
+
+  useEffect(() => {
+    const stored = sessionStorage.getItem('collabUserId');
+    userIdRef.current = stored ?? crypto.randomUUID();
+
+    if (!stored) {
+      sessionStorage.setItem('collabUserId', userIdRef.current);
+    }
+
+    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${protocol}://${window.location.host}/collab`);
+    wsRef.current = ws;
+
+    ws.addEventListener('open', () => {
+      ws.send(JSON.stringify({ type: 'join', userId: userIdRef.current }));
+    });
+
+    ws.addEventListener('message', (event) => {
+      try {
+        const data = JSON.parse(event.data as string);
+
+        if (data.type === 'chat') {
+          if (data.userId !== userIdRef.current) {
+            incomingRef.current = true;
+            setMessages((prev) => [...prev, data.message]);
+          }
+        } else if (data.type === 'presence') {
+          setRemoteUsers(data.users.filter((id: string) => id !== userIdRef.current));
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    return () => {
+      ws.close();
+    };
+  }, [setMessages]);
+
+  useEffect(() => {
+    if (incomingRef.current) {
+      incomingRef.current = false;
+      return;
+    }
+
+    const last = messages[messages.length - 1];
+
+    if (last && last.role === 'assistant' && userIdRef.current) {
+      wsRef.current?.send(
+        JSON.stringify({
+          type: 'chat',
+          userId: userIdRef.current,
+          message: last,
+        }),
+      );
+    }
+  }, [messages]);
 
   useEffect(() => {
     parseMessages(messages, isLoading);
@@ -179,6 +241,13 @@ export const ChatImpl = memo(({ initialMessages, storeMessageHistory }: ChatProp
        * aren't relevant here.
        */
       append({ role: 'user', content: `${diff}\n\n${_input}` });
+      wsRef.current?.send(
+        JSON.stringify({
+          type: 'chat',
+          userId: userIdRef.current,
+          message: { role: 'user', content: `${diff}\n\n${_input}` },
+        }),
+      );
 
       /**
        * After sending a new message we reset all modifications since the model
@@ -187,6 +256,13 @@ export const ChatImpl = memo(({ initialMessages, storeMessageHistory }: ChatProp
       workbenchStore.resetAllFileModifications();
     } else {
       append({ role: 'user', content: _input });
+      wsRef.current?.send(
+        JSON.stringify({
+          type: 'chat',
+          userId: userIdRef.current,
+          message: { role: 'user', content: _input },
+        }),
+      );
     }
 
     setInput('');
@@ -199,36 +275,43 @@ export const ChatImpl = memo(({ initialMessages, storeMessageHistory }: ChatProp
   const [messageRef, scrollRef] = useSnapScroll();
 
   return (
-    <BaseChat
-      ref={animationScope}
-      textareaRef={textareaRef}
-      input={input}
-      showChat={showChat}
-      chatStarted={chatStarted}
-      isStreaming={isLoading}
-      enhancingPrompt={enhancingPrompt}
-      promptEnhanced={promptEnhanced}
-      sendMessage={sendMessage}
-      messageRef={messageRef}
-      scrollRef={scrollRef}
-      handleInputChange={handleInputChange}
-      handleStop={abort}
-      messages={messages.map((message, i) => {
-        if (message.role === 'user') {
-          return message;
-        }
+    <div className="relative h-full w-full">
+      <div className="absolute top-2 right-2 flex gap-1">
+        {remoteUsers.map((id) => (
+          <span key={id} className="w-2 h-2 rounded-full bg-emerald-500" />
+        ))}
+      </div>
+      <BaseChat
+        ref={animationScope}
+        textareaRef={textareaRef}
+        input={input}
+        showChat={showChat}
+        chatStarted={chatStarted}
+        isStreaming={isLoading}
+        enhancingPrompt={enhancingPrompt}
+        promptEnhanced={promptEnhanced}
+        sendMessage={sendMessage}
+        messageRef={messageRef}
+        scrollRef={scrollRef}
+        handleInputChange={handleInputChange}
+        handleStop={abort}
+        messages={messages.map((message, i) => {
+          if (message.role === 'user') {
+            return message;
+          }
 
-        return {
-          ...message,
-          content: parsedMessages[i] || '',
-        };
-      })}
-      enhancePrompt={() => {
-        enhancePrompt(input, (input) => {
-          setInput(input);
-          scrollTextArea();
-        });
-      }}
-    />
+          return {
+            ...message,
+            content: parsedMessages[i] || '',
+          };
+        })}
+        enhancePrompt={() => {
+          enhancePrompt(input, (input) => {
+            setInput(input);
+            scrollTextArea();
+          });
+        }}
+      />
+    </div>
   );
 });
